@@ -54,6 +54,18 @@ pub struct LeoAbi {
     /// otherwise a sibling `imports/` directory next to the input.
     #[clap(long, value_name = "DIR")]
     imports_dir: Option<PathBuf>,
+
+    /// Check whether the input program is compatible with an interface standard, instead of
+    /// printing its ABI. Accepts a `.aleo` bytecode file (disassembled like the input, sharing
+    /// `--imports-dir`) or a `.abi.json` file produced by `leo abi`. The input is compatible
+    /// when the standard's public interface is a subset of the input's. Exits non-zero when it
+    /// is not.
+    #[clap(long, value_name = "FILE", conflicts_with = "output")]
+    against: Option<PathBuf>,
+
+    /// With `--against`, emit the compatibility report as JSON instead of human-readable text.
+    #[clap(long, requires = "against")]
+    json: bool,
 }
 
 impl Command for LeoAbi {
@@ -100,8 +112,8 @@ impl Command for LeoAbi {
 
         // `Process::add_program` is contextual, so dependencies must be loaded in topological order before the main
         // program.
-        let (main_aleo, dep_aleos) = match imports_dir {
-            Some(dir) => disassemble_with_imports(file_name, &content, self.network, &dir)?,
+        let (main_aleo, dep_aleos) = match &imports_dir {
+            Some(dir) => disassemble_with_imports(file_name, &content, self.network, dir)?,
             None => (
                 leo_disassembler::disassemble_from_str_for_network(file_name, &content, self.network)
                     .map_err(|e| crate::errors::failed_to_parse_aleo_file(file_name, e))?,
@@ -110,6 +122,14 @@ impl Command for LeoAbi {
         };
 
         let main_abi = leo_abi::aleo::generate(&main_aleo);
+
+        // Compatibility mode: compare the input's interface against a standard rather than printing its ABI.
+        if let Some(standard) = &self.against {
+            let standard_abi = load_standard_abi(standard, self.network, imports_dir.as_deref())?;
+            let problems = leo_abi::compat::check_compatibility(&main_abi, &standard_abi);
+            return report_compatibility(&problems, &main_abi.program, &standard_abi.program, self.json);
+        }
+
         let dep_abis: IndexMap<String, _> =
             dep_aleos.into_iter().map(|(name, aleo)| (name, leo_abi::aleo::generate(&aleo))).collect();
 
@@ -119,6 +139,62 @@ impl Command for LeoAbi {
         }
 
         Ok(())
+    }
+}
+
+/// Loads the ABI of an interface standard for compatibility checking. A `.json` file is parsed
+/// directly as a serialized [`leo_abi::Program`] (the output of `leo abi`); a `.aleo` file is
+/// disassembled the same way as the input program, resolving any imports from `imports_dir`.
+fn load_standard_abi(path: &Path, network: NetworkName, imports_dir: Option<&Path>) -> Result<leo_abi::Program> {
+    if !path.exists() {
+        return Err(crate::errors::cli_invalid_input(format!("File not found: {}", path.display())).into());
+    }
+    match path.extension().and_then(|s| s.to_str()) {
+        Some("json") => {
+            let text = std::fs::read_to_string(path).map_err(crate::errors::cli_io_error)?;
+            serde_json::from_str(&text).map_err(|e| {
+                crate::errors::cli_invalid_input(format!("could not parse ABI JSON `{}`: {e}", path.display())).into()
+            })
+        }
+        Some("aleo") => {
+            let content = std::fs::read_to_string(path).map_err(crate::errors::cli_io_error)?;
+            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown");
+            let aleo = match imports_dir {
+                Some(dir) => disassemble_with_imports(name, &content, network, dir)?.0,
+                None => leo_disassembler::disassemble_from_str_for_network(name, &content, network)
+                    .map_err(|e| crate::errors::failed_to_parse_aleo_file(name, e))?,
+            };
+            Ok(leo_abi::aleo::generate(&aleo))
+        }
+        _ => Err(crate::errors::cli_invalid_input(format!(
+            "Expected a .aleo or .abi.json file for `--against`, got: {}",
+            path.display()
+        ))
+        .into()),
+    }
+}
+
+/// Prints the compatibility `problems` (empty means compatible) and returns a `not_compatible`
+/// error when there are any, so the command exits non-zero.
+fn report_compatibility(problems: &[String], program: &str, standard: &str, json: bool) -> Result<()> {
+    if json {
+        let value = serde_json::json!({ "compatible": problems.is_empty(), "problems": problems });
+        let text =
+            serde_json::to_string_pretty(&value).map_err(|e| crate::errors::failed_to_serialize_abi(e.to_string()))?;
+        println!("{text}");
+    } else if problems.is_empty() {
+        println!("`{program}` is compatible with `{standard}`");
+    } else {
+        println!("`{program}` is not compatible with `{standard}`:");
+        for problem in problems {
+            println!("  - {problem}");
+        }
+    }
+
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(crate::errors::not_compatible(program, standard, problems.len()).into())
     }
 }
 
@@ -553,6 +629,102 @@ function id_a:
             assert_eq!(main.stub_id.to_string(), "a.aleo");
             let names: Vec<&str> = deps.iter().map(|(n, _)| n.as_str()).collect();
             assert_eq!(names, vec!["b.aleo"], "credits.aleo must be skipped silently, got: {names:?}");
+        });
+    }
+
+    /// A standard `transfer:(address, u64) -> address` that the candidate also declares (alongside an extra
+    /// `mint`) must be reported as compatible — a superset satisfies the standard.
+    const STANDARD_SRC: &str = "\
+program std_iface.aleo;
+
+function transfer:
+    input r0 as address.private;
+    input r1 as u64.public;
+    output r0 as address.private;
+";
+
+    const CANDIDATE_SRC: &str = "\
+program token.aleo;
+
+function transfer:
+    input r0 as address.private;
+    input r1 as u64.public;
+    output r0 as address.private;
+
+function mint:
+    input r0 as address.private;
+    output r0 as address.private;
+";
+
+    /// Disassembles `src` (no imports) and generates its ABI.
+    fn abi_of(name: &str, src: &str) -> leo_abi::Program {
+        let aleo = leo_disassembler::disassemble_from_str_for_network(name, src, NetworkName::TestnetV0)
+            .expect("expected valid Aleo bytecode");
+        leo_abi::aleo::generate(&aleo)
+    }
+
+    #[test]
+    fn compat_superset_is_compatible() {
+        create_session_if_not_set_then(|_| {
+            let standard = abi_of("std_iface.aleo", STANDARD_SRC);
+            let candidate = abi_of("token.aleo", CANDIDATE_SRC);
+            let problems = leo_abi::compat::check_compatibility(&candidate, &standard);
+            assert!(problems.is_empty(), "expected compatible: {problems:?}");
+        });
+    }
+
+    #[test]
+    fn compat_missing_function_is_incompatible() {
+        create_session_if_not_set_then(|_| {
+            let standard_src = "\
+program std_iface.aleo;
+
+function burn:
+    input r0 as u64.public;
+    output r0 as u64.public;
+";
+            let standard = abi_of("std_iface.aleo", standard_src);
+            let candidate = abi_of("token.aleo", CANDIDATE_SRC);
+            let problems = leo_abi::compat::check_compatibility(&candidate, &standard);
+            assert_eq!(problems, vec!["missing function `burn`".to_string()]);
+        });
+    }
+
+    #[test]
+    fn load_standard_abi_reads_json() {
+        create_session_if_not_set_then(|_| {
+            let abi = abi_of("token.aleo", CANDIDATE_SRC);
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("token.abi.json");
+            std::fs::write(&path, serde_json::to_string(&abi).unwrap()).unwrap();
+
+            let loaded = load_standard_abi(&path, NetworkName::TestnetV0, None).expect("expected JSON ABI to load");
+            assert_eq!(loaded, abi, "round-tripped ABI must match the original");
+        });
+    }
+
+    #[test]
+    fn load_standard_abi_reads_aleo() {
+        create_session_if_not_set_then(|_| {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("token.aleo");
+            std::fs::write(&path, CANDIDATE_SRC).unwrap();
+
+            let loaded = load_standard_abi(&path, NetworkName::TestnetV0, None).expect("expected .aleo ABI to load");
+            assert_eq!(loaded, abi_of("token.aleo", CANDIDATE_SRC));
+        });
+    }
+
+    #[test]
+    fn load_standard_abi_rejects_unsupported_extension() {
+        create_session_if_not_set_then(|_| {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("standard.txt");
+            std::fs::write(&path, "irrelevant").unwrap();
+
+            let err = load_standard_abi(&path, NetworkName::TestnetV0, None)
+                .expect_err("expected an unsupported extension to be rejected");
+            assert!(err.to_string().contains(".aleo or .abi.json"), "unexpected error: {err}");
         });
     }
 }

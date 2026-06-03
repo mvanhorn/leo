@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+
+LEO_BIN=${1}
+
+# Run a leo invocation, folding stderr into stdout and recording its exit code, so each
+# scenario's full output is captured deterministically.
+run() {
+    "$@" 2>&1
+    echo "exit: $?"
+}
+
+echo "=== compatible: superset vs standard.aleo ==="
+run ${LEO_BIN} --disable-update-check abi compatible.aleo --against standard.aleo
+
+echo ""
+echo "=== compatible: identical (standard vs standard) ==="
+run ${LEO_BIN} --disable-update-check abi standard.aleo --against standard.aleo
+
+echo ""
+echo "=== incompatible: missing function, mapping, and struct ==="
+run ${LEO_BIN} --disable-update-check abi missing.aleo --against standard.aleo
+
+echo ""
+echo "=== incompatible: differing function, record, and struct definitions ==="
+run ${LEO_BIN} --disable-update-check abi differs.aleo --against standard.aleo
+
+echo ""
+echo "=== compatible, JSON report ==="
+run ${LEO_BIN} --disable-update-check abi compatible.aleo --against standard.aleo --json
+
+echo ""
+echo "=== incompatible, JSON report ==="
+run ${LEO_BIN} --disable-update-check abi missing.aleo --against standard.aleo --json
+
+echo ""
+echo "=== standard supplied as a .abi.json file ==="
+${LEO_BIN} --disable-update-check abi standard.aleo -o std_abi >/dev/null
+run ${LEO_BIN} --disable-update-check abi compatible.aleo --against std_abi/standard.aleo.abi.json
+
+echo ""
+echo "=== error: --against file does not exist ==="
+run ${LEO_BIN} --disable-update-check abi compatible.aleo --against does_not_exist.aleo
+
+echo ""
+echo "=== error: --against has an unsupported extension ==="
+run ${LEO_BIN} --disable-update-check abi compatible.aleo --against standard.txt

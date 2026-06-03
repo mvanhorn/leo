@@ -1,0 +1,7 @@
+[ETYC0372032] Error: `Final` outputs cannot have visibility modes
+   ╭─[ compiler-test:6:41 ]
+   │
+ 6 │     fn increment(public amount: u32) -> public Final {
+   │ 
+   │ Help: Remove the `public`, `private`, or `constant` modifier.
+───╯

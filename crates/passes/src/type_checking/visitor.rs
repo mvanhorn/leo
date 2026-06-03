@@ -2387,6 +2387,14 @@ impl TypeCheckingVisitor<'_> {
                     function_output.span,
                 ));
             }
+            // A `Final` output lowers to an Aleo `future`, which has no visibility, so a mode on it
+            // is meaningless.
+            if matches!(function_output.type_, Type::Future(_)) && function_output.mode != Mode::None {
+                self.emit_err(crate::errors::type_checker::function_outputs_cannot_have_modes(
+                    "`Final`",
+                    function_output.span,
+                ));
+            }
             // Async transitions must return exactly one future, and it must be in the last position.
             if function.has_final_output()
                 && function.variant.is_entry()

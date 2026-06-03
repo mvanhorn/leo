@@ -1,0 +1,64 @@
+=== compatible: superset vs standard.aleo ===
+`compatible.aleo` is compatible with `standard.aleo`
+exit: 0
+
+=== compatible: identical (standard vs standard) ===
+`standard.aleo` is compatible with `standard.aleo`
+exit: 0
+
+=== incompatible: missing function, mapping, and struct ===
+`missing.aleo` is not compatible with `standard.aleo`:
+  - missing function `describe`
+  - missing mapping `balances`
+  - missing struct `Metadata`
+Error [ECLI0377069]: program `missing.aleo` is not compatible with standard `standard.aleo`: 3 interface item(s) unsatisfied
+     |
+     = Review the unsatisfied items listed above. The program must declare every function, view, mapping, storage variable, record, and struct the standard requires, with matching signatures.
+exit: 237
+
+=== incompatible: differing function, record, and struct definitions ===
+`differs.aleo` is not compatible with `standard.aleo`:
+  - function `transfer` differs
+  - record `Token` differs
+  - struct `Metadata` differs
+Error [ECLI0377069]: program `differs.aleo` is not compatible with standard `standard.aleo`: 3 interface item(s) unsatisfied
+     |
+     = Review the unsatisfied items listed above. The program must declare every function, view, mapping, storage variable, record, and struct the standard requires, with matching signatures.
+exit: 237
+
+=== compatible, JSON report ===
+{
+  "compatible": true,
+  "problems": []
+}
+exit: 0
+
+=== incompatible, JSON report ===
+{
+  "compatible": false,
+  "problems": [
+    "missing function `describe`",
+    "missing mapping `balances`",
+    "missing struct `Metadata`"
+  ]
+}
+Error [ECLI0377069]: program `missing.aleo` is not compatible with standard `standard.aleo`: 3 interface item(s) unsatisfied
+     |
+     = Review the unsatisfied items listed above. The program must declare every function, view, mapping, storage variable, record, and struct the standard requires, with matching signatures.
+exit: 237
+
+=== standard supplied as a .abi.json file ===
+`compatible.aleo` is compatible with `standard.aleo`
+exit: 0
+
+=== error: --against file does not exist ===
+Error [ECLI0377001]: invalid CLI input: File not found: does_not_exist.aleo
+     |
+     = Run `leo <command> --help` to review the expected arguments.
+exit: 169
+
+=== error: --against has an unsupported extension ===
+Error [ECLI0377001]: invalid CLI input: Expected a .aleo or .abi.json file for `--against`, got: standard.txt
+     |
+     = Run `leo <command> --help` to review the expected arguments.
+exit: 169
